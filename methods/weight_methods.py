@@ -1199,6 +1199,10 @@ class DynamicWeightAverage(WeightMethod):
         self.running_iterations += 1
 
         return loss, dict(weights=task_weights)
+class MOGP():
+    pass
+class EvoGrad(WeightMethod):
+    pass
 
 
 class WeightMethods:
