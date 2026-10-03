@@ -93,4 +93,5 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
     return population,halloffame
 ```
 
-<!-- Our method has undergone multiple iterations of development and refinement, we have consolidated and organized the codebase. Further improvements to code readability and documentation may be made as needed. -->
+The repository may receive further updates to improve code readability
+and documentation.
