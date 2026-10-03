@@ -16,11 +16,24 @@ class ConfMatrix(object):
             inds = n * target[k].to(torch.int64) + pred[k]
             self.mat += torch.bincount(inds, minlength=n ** 2).reshape(n, n)
 
-    def get_metrics(self):
+    # def get_metrics(self):
+    #     h = self.mat.float()
+    #     acc = torch.diag(h).sum() / h.sum()
+    #     iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h))
+    #     return torch.mean(iu).cpu().numpy(), acc.cpu().numpy()
+    def get_metrics(self, ignore_empty=False):
         h = self.mat.float()
-        acc = torch.diag(h).sum() / h.sum()
-        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h))
-        return torch.mean(iu).cpu().numpy(), acc.cpu().numpy()
+        acc = h.diag().sum() / h.sum()
+        union = h.sum(1) + h.sum(0) - h.diag()
+
+        if ignore_empty:
+            valid = union > 0
+            iu = h.diag()[valid] / union[valid]
+        else:
+            iu = h.diag() / union
+
+        return iu.mean().cpu().numpy(), acc.cpu().numpy()
+
 
 
 def depth_error(x_pred, x_output):
@@ -72,11 +85,29 @@ delta_stats = [
     "<30",
 ]
 BASE = np.array(
-    [0.3830, 0.6376, 0.6754, 0.2780, 25.01, 19.21, 0.3014, 0.5720, 0.6915]
-)  # base results from CAGrad
+    # [0.3830, 0.6376, 0.6754, 0.2780, 25.01, 19.21, 0.3014, 0.5720, 0.6915]
+    [0.4057,0.6494,0.6069,0.2663,24.35,17.90,0.3206,0.5976,0.7107]
+)  
 SIGN = np.array([1, 1, 0, 0, 0, 0, 1, 1, 1])
 KK = np.ones(9) * -1
 
 
 def delta_fn(a):
     return (KK ** SIGN * (a - BASE) / BASE).mean() * 100.0  # * 100 for percentage
+
+
+def delta_p_fn(a, baseline=None, task_sizes=(2, 2, 5)):
+    a = np.asarray(a, dtype=np.float64).reshape(-1)
+    baseline = np.asarray(BASE if baseline is None else baseline,dtype=np.float64,).reshape(-1)
+
+    improvement = (2 * SIGN - 1) * (a - baseline) / baseline
+
+    task_improvements = []
+    offset = 0
+    for size in task_sizes:
+        task_improvements.append(
+            improvement[offset:offset + size].mean()
+        )
+        offset += size
+
+    return float(np.mean(task_improvements) * 100.0)

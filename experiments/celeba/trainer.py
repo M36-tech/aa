@@ -49,6 +49,14 @@ class CelebaMetrics():
         f1        = 2 * precision * recall / (precision + recall + 1e-8)
         return f1.cpu().numpy()
 
+@torch.no_grad()
+def compute_metrics(model, batch):
+    x, y = batch
+    prediction = model(x)
+
+    metric = CelebaMetrics()
+    metric.incr(prediction, y)
+    return metric.result()
 
 def main(path, lr, bs, device):
     # we only train for specific task
@@ -75,6 +83,12 @@ def main(path, lr, bs, device):
 
     # weight method
     weight_methods_parameters = extract_weight_method_parameters_from_args(args)
+    if args.method == "evograd":
+        weight_methods_parameters[args.method].update(
+            dataset="celeba",
+            sample_size=4096,
+            max_norm=args.max_norm,
+        )
     weight_method = WeightMethods(
         args.method, n_tasks=40, device=device, **weight_methods_parameters[args.method]
     )
@@ -92,12 +106,28 @@ def main(path, lr, bs, device):
             y_ = model(x)
             losses = torch.stack([loss_fn(y_task_pred, y_task) for (y_task_pred, y_task) in zip(y_, y)])
             optimizer.zero_grad()
+            extra_kwargs = {}
+            if args.method == "evograd":
+                extra_kwargs = {
+                    "model": model,
+                    "optimizer": optimizer,
+                    "metric_batch": (x, y),
+                    "metric_fn": compute_metrics,
+                }
+
             loss, extra_outputs = weight_method.backward(
                 losses=losses,
                 shared_parameters=list(model.shared_parameters()),
                 task_specific_parameters=list(model.task_specific_parameters()),
                 last_shared_parameters=list(model.last_shared_parameters()),
+                **extra_kwargs,
             )
+            # loss, extra_outputs = weight_method.backward(
+            #     losses=losses,
+            #     shared_parameters=list(model.shared_parameters()),
+            #     task_specific_parameters=list(model.task_specific_parameters()),
+            #     last_shared_parameters=list(model.last_shared_parameters()),
+            # )
             optimizer.step()
             if "famo" in args.method:
                 with torch.no_grad():

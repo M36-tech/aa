@@ -11,7 +11,15 @@ from tqdm import trange
 
 from experiments.cityscapes.data import Cityscapes
 from experiments.cityscapes.models import SegNet, SegNetMtan
-from experiments.cityscapes.utils import ConfMatrix, delta_fn, depth_error
+# from experiments.cityscapes.utils import ConfMatrix, delta_fn, depth_error
+from experiments.cityscapes.utils import (
+    ConfMatrix,
+    delta_fn,
+    delta_p_fn,
+    depth_error,
+    BASE as TEST_DELTA_P_BASE,
+)
+from methods.GP_evo.Evolution import stl_train_results
 from experiments.utils import (
     common_parser,
     extract_weight_method_parameters_from_args,
@@ -43,6 +51,26 @@ def calc_loss(x_pred, x_output, task_type):
 
     return loss
 
+@torch.no_grad()
+def compute_metrics(model, batch):
+    image, label, depth = batch
+    prediction = model(image)
+
+    conf = ConfMatrix(prediction[0].shape[1])
+    conf.update(
+        prediction[0].argmax(1).flatten(),
+        label.long().flatten(),
+    )
+    miou, accuracy = conf.get_metrics(ignore_empty=True)
+
+    if not (depth.sum(dim=1) != 0).any():
+        return np.full(4, np.nan)
+
+    return np.asarray([
+        miou,
+        accuracy,
+        *depth_error(prediction[1], depth),
+    ], dtype=np.float64)
 
 def main(path, lr, bs, device):
     # ----
@@ -74,6 +102,12 @@ def main(path, lr, bs, device):
 
     # weight method
     weight_methods_parameters = extract_weight_method_parameters_from_args(args)
+    if args.method == "evograd":
+        weight_methods_parameters[args.method].update(
+            dataset="cityscapes",
+            sample_size=4096,
+            max_norm=args.max_norm,
+        )
     weight_method = WeightMethods(
         args.method, n_tasks=2, device=device, **weight_methods_parameters[args.method]
     )
@@ -122,6 +156,14 @@ def main(path, lr, bs, device):
                     calc_loss(train_pred[1], train_depth, "depth"),
                 )
             )
+            extra_kwargs = {}
+            if args.method == "evograd":
+                extra_kwargs = {
+                    "model": model,
+                    "optimizer": optimizer,
+                    "metric_batch": (train_data, train_label, train_depth),
+                    "metric_fn": compute_metrics,
+                }
 
             loss, extra_outputs = weight_method.backward(
                 losses=losses,
@@ -129,7 +171,17 @@ def main(path, lr, bs, device):
                 task_specific_parameters=list(model.task_specific_parameters()),
                 last_shared_parameters=list(model.last_shared_parameters()),
                 representation=features,
+                **extra_kwargs,
             )
+
+
+            # loss, extra_outputs = weight_method.backward(
+            #     losses=losses,
+            #     shared_parameters=list(model.shared_parameters()),
+            #     task_specific_parameters=list(model.task_specific_parameters()),
+            #     last_shared_parameters=list(model.last_shared_parameters()),
+            #     representation=features,
+            # )
             loss_list.append(losses.detach().cpu())
             optimizer.step()
 
@@ -169,7 +221,7 @@ def main(path, lr, bs, device):
         with torch.no_grad():  # operations inside don't track history
             test_dataset = iter(test_loader)
             for k in range(test_batch):
-                test_data, test_label, test_depth = test_dataset.next()
+                test_data, test_label, test_depth = next(test_dataset)
                 test_data, test_label = test_data.to(device), test_label.long().to(
                     device
                 )
@@ -194,10 +246,11 @@ def main(path, lr, bs, device):
             avg_cost[epoch, 7:9] = conf_mat.get_metrics()
 
             # Test Delta_m
-            test_delta_m = delta_fn(
-                avg_cost[epoch, [7, 8, 10, 11]]
-            )
-            deltas[epoch] = test_delta_m
+            # test_delta_m = delta_fn(
+            #     avg_cost[epoch, [7, 8, 10, 11]]
+            # )
+            test_delta_p = delta_p_fn(avg_cost[epoch, [7, 8, 10, 11]])
+            deltas[epoch] = test_delta_p
 
             # print results
             print(
@@ -208,7 +261,7 @@ def main(path, lr, bs, device):
                 f"| {avg_cost[epoch, 3]:.4f} {avg_cost[epoch, 4]:.4f} {avg_cost[epoch, 5]:.4f} | {avg_cost[epoch, 6]:.4f} "
                 f"TEST: {avg_cost[epoch, 7]:.4f} {avg_cost[epoch, 8]:.4f} {avg_cost[epoch, 9]:.4f} | "
                 f"{avg_cost[epoch, 10]:.4f} {avg_cost[epoch, 11]:.4f}"
-                f"| {test_delta_m:.3f}"
+                f"| {test_delta_p:.3f}"
             )
 
             if wandb.run is not None:
@@ -225,7 +278,7 @@ def main(path, lr, bs, device):
                 wandb.log({"Test Depth Loss": avg_cost[epoch, 9]}, step=epoch)
                 wandb.log({"Test Absolute Error": avg_cost[epoch, 10]}, step=epoch)
                 wandb.log({"Test Relative Error": avg_cost[epoch, 11]}, step=epoch)
-                wandb.log({"Test ∆m": test_delta_m}, step=epoch)
+                wandb.log({"Test ∆p": test_delta_p}, step=epoch)
 
 
 
@@ -251,7 +304,7 @@ def main(path, lr, bs, device):
                 name = f"{args.method}_sd{args.seed}"
 
             torch.save({
-                "delta_m": deltas,
+                "delta_p": deltas,
                 "keys": keys,
                 "avg_cost": avg_cost,
                 "losses": loss_list,
@@ -264,7 +317,7 @@ if __name__ == "__main__":
         data_path=os.path.join(os.getcwd(), "dataset"),
         lr=1e-4,
         n_epochs=200,
-        batch_size=8,
+        batch_size=24,
     )
     parser.add_argument(
         "--model",

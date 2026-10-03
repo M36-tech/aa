@@ -11,7 +11,16 @@ from tqdm import trange
 
 from experiments.nyuv2.data import NYUv2
 from experiments.nyuv2.models import SegNet, SegNetMtan
-from experiments.nyuv2.utils import ConfMatrix, delta_fn, depth_error, normal_error
+# from experiments.nyuv2.utils import ConfMatrix, delta_fn, depth_error, normal_error
+from experiments.nyuv2.utils import (
+    ConfMatrix,
+    delta_fn,
+    delta_p_fn,
+    depth_error,
+    normal_error,
+    BASE as TEST_DELTA_P_BASE,
+)
+from methods.GP_evo.Evolution import stl_train_results
 from experiments.utils import (
     common_parser,
     extract_weight_method_parameters_from_args,
@@ -49,6 +58,27 @@ def calc_loss(x_pred, x_output, task_type):
 
     return loss
 
+@torch.no_grad()
+def compute_metrics(model, batch):
+    image, label, depth, normal = batch
+    prediction = model(image)
+
+    conf = ConfMatrix(prediction[0].shape[1])
+    conf.update(
+        prediction[0].argmax(1).flatten(),
+        label.long().flatten(),
+    )
+    miou, accuracy = conf.get_metrics(ignore_empty=True)
+
+    if not (depth.sum(dim=1) != 0).any() or not (normal.sum(dim=1) != 0).any():
+        return np.full(9, np.nan)
+
+    return np.asarray([
+        miou,
+        accuracy,
+        *depth_error(prediction[1], depth),
+        *normal_error(prediction[2], normal),
+    ], dtype=np.float64)
 
 def main(path, lr, bs, device):
     # ----
@@ -80,6 +110,8 @@ def main(path, lr, bs, device):
 
     # weight method
     weight_methods_parameters = extract_weight_method_parameters_from_args(args)
+    if args.method == "evograd":
+        weight_methods_parameters[args.method].update(dataset="nyuv2",sample_size=4096,max_norm=args.max_norm,)
 
     weight_method = WeightMethods(
         args.method, n_tasks=3, device=device, **weight_methods_parameters[args.method]
@@ -129,6 +161,14 @@ def main(path, lr, bs, device):
                     calc_loss(train_pred[2], train_normal, "normal"),
                 )
             )
+            extra_kwargs = {}
+            if args.method == "evograd":
+                extra_kwargs = {
+                    "model": model,
+                    "optimizer": optimizer,
+                    "metric_batch": (train_data, train_label, train_depth, train_normal),
+                    "metric_fn": compute_metrics,
+                }
 
             loss, extra_outputs = weight_method.backward(
                 losses=losses,
@@ -136,7 +176,16 @@ def main(path, lr, bs, device):
                 task_specific_parameters=list(model.task_specific_parameters()),
                 last_shared_parameters=list(model.last_shared_parameters()),
                 representation=features,
+                **extra_kwargs,
             )
+
+            # loss, extra_outputs = weight_method.backward(
+            #     losses=losses,
+            #     shared_parameters=list(model.shared_parameters()),
+            #     task_specific_parameters=list(model.task_specific_parameters()),
+            #     last_shared_parameters=list(model.last_shared_parameters()),
+            #     representation=features,
+            # )
 
             # for record intermediate statistics
             loss_list.append(losses.detach().cpu())
@@ -184,7 +233,7 @@ def main(path, lr, bs, device):
         with torch.no_grad():  # operations inside don't track history
             test_dataset = iter(test_loader)
             for k in range(test_batch):
-                test_data, test_label, test_depth, test_normal = test_dataset.next()
+                test_data, test_label, test_depth, test_normal = next(test_dataset)
                 test_data, test_label = test_data.to(device), test_label.long().to(
                     device
                 )
@@ -214,15 +263,16 @@ def main(path, lr, bs, device):
             avg_cost[epoch, 13:15] = conf_mat.get_metrics()
 
             # Test Delta_m
-            test_delta_m = delta_fn(
-                avg_cost[epoch, [13, 14, 16, 17, 19, 20, 21, 22, 23]]
-            )
-            deltas[epoch] = test_delta_m
+            # test_delta_m = delta_fn(
+            #     avg_cost[epoch, [13, 14, 16, 17, 19, 20, 21, 22, 23]]
+            # )
+            test_delta_p = delta_p_fn(avg_cost[epoch, [13, 14, 16, 17, 19, 20, 21, 22, 23]])
+            deltas[epoch] = test_delta_p
 
             # print results
             print(
                 f"LOSS FORMAT: SEMANTIC_LOSS MEAN_IOU PIX_ACC | DEPTH_LOSS ABS_ERR REL_ERR "
-                f"| NORMAL_LOSS MEAN MED <11.25 <22.5 <30 | ∆m (test)"
+                f"| NORMAL_LOSS MEAN MED <11.25 <22.5 <30 | ∆p (test)"
             )
             print(
                 f"Epoch: {epoch:04d} | TRAIN: {avg_cost[epoch, 0]:.4f} {avg_cost[epoch, 1]:.4f} {avg_cost[epoch, 2]:.4f} "
@@ -231,7 +281,7 @@ def main(path, lr, bs, device):
                 f"TEST: {avg_cost[epoch, 12]:.4f} {avg_cost[epoch, 13]:.4f} {avg_cost[epoch, 14]:.4f} | "
                 f"{avg_cost[epoch, 15]:.4f} {avg_cost[epoch, 16]:.4f} {avg_cost[epoch, 17]:.4f} | {avg_cost[epoch, 18]:.4f} "
                 f"{avg_cost[epoch, 19]:.4f} {avg_cost[epoch, 20]:.4f} {avg_cost[epoch, 21]:.4f} {avg_cost[epoch, 22]:.4f} {avg_cost[epoch, 23]:.4f} "
-                f"| {test_delta_m:.3f}"
+                f"| {test_delta_p:.3f}"
             )
 
             if wandb.run is not None:
@@ -260,7 +310,7 @@ def main(path, lr, bs, device):
                 wandb.log({"Test Loss <11.25": avg_cost[epoch, 21]}, step=epoch)
                 wandb.log({"Test Loss <22.5": avg_cost[epoch, 22]}, step=epoch)
                 wandb.log({"Test Loss <30": avg_cost[epoch, 23]}, step=epoch)
-                wandb.log({"Test ∆m": test_delta_m}, step=epoch)
+                wandb.log({"Test ∆p": test_delta_p}, step=epoch)
 
 
 
@@ -299,7 +349,7 @@ def main(path, lr, bs, device):
                 name = f"{args.method}_sd{args.seed}"
 
             torch.save({
-                "delta_m": deltas,
+                "delta_p": deltas,
                 "keys": keys,
                 "avg_cost": avg_cost,
                 "losses": loss_list,
@@ -312,7 +362,7 @@ if __name__ == "__main__":
         data_path=os.path.join(os.getcwd(), "dataset"),
         lr=1e-4,
         n_epochs=200,
-        batch_size=2,
+        batch_size=6,
     )
     parser.add_argument(
         "--model",

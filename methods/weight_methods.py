@@ -8,8 +8,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from scipy.optimize import minimize
-
+from methods.GP_evo.Evolution import *
 from methods.min_norm_solvers import MinNormSolver, gradient_normalizers
+from methods.GP_evo.Evolution import initial, evo
 
 EPS = 1e-8 # for numerical stability
 
@@ -1199,10 +1200,140 @@ class DynamicWeightAverage(WeightMethod):
         self.running_iterations += 1
 
         return loss, dict(weights=task_weights)
-class MOGP():
-    pass
+
+
+
+
 class EvoGrad(WeightMethod):
-    pass
+
+    def __init__(
+        self, n_tasks, device, dataset,
+        max_norm=1.0, sample_size=4096,
+    ):
+        super().__init__(n_tasks=n_tasks, device=device, max_norm=max_norm)
+
+        self.dataset = dataset
+        self.sample_size = int(sample_size)
+        self.k = 0
+        self.pop, self.toolbox, self.hof = initial(n_tasks)
+        self.nondominated_set_k = []
+        self.last_info = {}
+
+    def get_weighted_loss(
+        self,
+        losses,
+        shared_parameters,
+        *,
+        model,
+        optimizer,
+        metric_batch,
+        metric_fn=None,
+        **kwargs,
+    ):
+        shared_parameters = list(shared_parameters)
+
+        grad_dims = [p.numel() for p in shared_parameters]
+        grads = shared_parameters[0].new_zeros(
+            (sum(grad_dims), self.n_tasks)
+        )
+
+        for p in shared_parameters:
+            p.grad = None
+
+        for i in range(self.n_tasks):
+            losses[i].backward(
+                retain_graph=i < self.n_tasks - 1
+            )
+
+            self.grad2vec(shared_parameters,grads,grad_dims,i,)
+
+            for p in shared_parameters:
+                p.grad = None
+
+        g, GTG = self.evograd(grads,model,optimizer,shared_parameters,grad_dims,metric_batch,metric_fn,)
+
+        self.overwrite_grad(shared_parameters,g,grad_dims,)
+
+        return GTG
+
+    @staticmethod
+    def grad2vec(shared_params, grads, grad_dims, task):
+        offset = 0
+
+        for param, size in zip(shared_params, grad_dims):
+            if param.grad is not None:
+                grads[offset:offset + size, task].copy_(
+                    param.grad.detach().reshape(-1)
+                )
+
+            offset += size
+
+    @staticmethod
+    def overwrite_grad(shared_parameters, newgrad, grad_dims):
+        offset = 0
+
+        for param, size in zip(shared_parameters, grad_dims):
+            param.grad = (newgrad[offset:offset + size].reshape_as(param).clone())
+
+            offset += size
+
+    @torch.no_grad()
+    def evograd(
+        self, grads, model, optimizer, shared_parameters,
+        grad_dims, metric_batch, metric_fn,
+    ):
+        self.k += 1
+        norms = torch.linalg.vector_norm(grads, dim=0).clamp_min(1e-12)
+
+
+        if grads.shape[0] > self.sample_size:
+            indices = torch.randperm(
+                grads.shape[0], device=grads.device,
+            )[:self.sample_size]
+            G = grads.index_select(0, indices)
+        else:
+            G = grads
+
+        self.pop, g, self.nondominated_set_k, info = evo(
+            G / norms, G, self.k,
+            self.pop, self.toolbox, self.hof, self.nondominated_set_k,
+            full_inputs=grads / norms,
+            full_G=grads,
+            model=model,
+            optimizer=optimizer,
+            shared_parameters=shared_parameters,
+            metric_batch=metric_batch,
+            dataset=self.dataset,
+            max_norm=self.max_norm,
+            metric_fn=metric_fn,
+        )
+        self.last_info = dict(
+            info, batch_index=self.k, sampled_coordinates=G.shape[0],
+        )
+        return g, grads.T @ grads
+
+    def backward(
+        self,
+        losses,
+        shared_parameters=None,
+        **kwargs,
+    ):
+        shared_parameters = list(shared_parameters)
+
+        GTG = self.get_weighted_loss(
+            losses,
+            shared_parameters,
+            **kwargs,
+        )
+
+        if self.max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                shared_parameters,
+                self.max_norm,
+                error_if_nonfinite=True,
+            )
+
+        return None, dict(self.last_info, GTG=GTG)
 
 
 class WeightMethods:
@@ -1247,4 +1378,5 @@ METHODS = dict(
     log_imtl=LOG_IMTLG,
     nashmtl=NashMTL,
     famo=FAMO,
+    evograd = EvoGrad,
 )

@@ -1,3 +1,4 @@
+We modified the repo from [FAMO](https://github.com/Cranial-XIX/FAMO) and [FairGrad](https://github.com/OptMN-Lab/fairgrad). We use DEAP for genetic programming and evolutionary search.
 # Installation
 Create the conda environment and install torch
 ```bash
@@ -22,9 +23,9 @@ pip install -e .
 
 [CityScapes](https://www.dropbox.com/sh/gaw6vh6qusoyms6/AADwWi0Tp3E3M4B2xzeGlsEna?dl=0) (the small version)
 # CelebA results
-see  celeba_mtl_result.md
+See [celeba_mtl_result.md](./celeba_mtl_result.md) for the results averaged over three random seeds.
 # NSGA-II code
-you should put the code in  deap.algorithms:
+Put the code in  deap.algorithms:
 
 ```python
 def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame=None, verbose=__debug__):
@@ -69,7 +70,7 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
         for ind, fitness in zip(combinedPop, fitnesses):
             ind.fitness.values = fitness
 
-        print("-" * 50 + "{}".format(gen) + "-" * 50)
+        # print("-" * 50 + "{}".format(gen) + "-" * 50)
 
         fronts = tools.emo.sortNondominated(combinedPop, len(combinedPop))
     
@@ -91,47 +92,5 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
 
     return population,halloffame
 ```
-# Compile function
-Replace the compile function in deap.gp with:
-```python
-######################################
-# GP Tree compilation functions      #
-######################################
-def compile(expr, pset):
-    """Compile the expression *expr*.
 
-    :param expr: Expression to compile. It can either be a PrimitiveTree,
-                a string of Python code or any object that when
-                converted into string produced a valid Python code
-                expression.
-    :param pset: Primitive set against which the expression is compile.
-    :returns: a function if the primitive set has 1 or more arguments,
-            or return the results produced by evaluating the tree.
-    """
-    code = str(expr)
-    if len(pset.arguments) > 0:
-        # This section is a stripped version of the lambdify
-        # function of SymPy 0.6.6.
-        # args = ",".join(arg for arg in pset.arguments)
-        for g in reversed(pset.arguments):
-            if code.find(g) != -1:
-                index = g[1:]
-                replace_str = "list" + "[" + index + "]"
-                # print(str)
-                code = code.replace(g, replace_str)
-        code = "lambda list: {code}".format(code=code)
-    try:
-        # print(code)
-        return eval(code, pset.context, {})
-    except MemoryError:
-        _, _, traceback = sys.exc_info()
-        raise MemoryError("DEAP : Error in tree evaluation :"
-                            " Python cannot evaluate a tree higher than 90. "
-                            "To avoid this problem, you should use bloat control on your "
-                            "operators. See the DEAP documentation for more information. "
-                            "DEAP will now abort.").with_traceback(traceback)
-```
-
-⚠️ **Code Status** ⚠️
-
-Our method has undergone multiple development iterations. We have released the installation instructions, dataset information, and the key modifications to the DEAP framework used in our experiments. To ensure that the code is well organized, the complete implementation of EvoGrad will be released within one week.
+<!-- Our method has undergone multiple iterations of development and refinement, we have consolidated and organized the codebase. Further improvements to code readability and documentation may be made as needed. -->
