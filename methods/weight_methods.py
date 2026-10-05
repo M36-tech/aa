@@ -1230,29 +1230,39 @@ class EvoGrad(WeightMethod):
         metric_fn=None,
         **kwargs,
     ):
-        shared_parameters = list(shared_parameters)
-
-        grad_dims = [p.numel() for p in shared_parameters]
-        grads = shared_parameters[0].new_zeros(
+        # GP 只处理共享参数
+        parameters = [
+            p for p in shared_parameters if p.requires_grad
+        ]
+        grad_dims = [p.numel() for p in parameters]
+        grads = parameters[0].new_zeros(
             (sum(grad_dims), self.n_tasks)
         )
 
-        for p in shared_parameters:
+        # batch 开始时清空所有梯度
+        for p in model.parameters():
             p.grad = None
 
-        for i in range(self.n_tasks):
-            losses[i].backward(
-                retain_graph=i < self.n_tasks - 1
+        for task in range(self.n_tasks):
+            losses[task].backward(
+                retain_graph=task < self.n_tasks - 1
             )
+            self.grad2vec(parameters, grads, grad_dims, task)
 
-            self.grad2vec(shared_parameters,grads,grad_dims,i,)
-
-            for p in shared_parameters:
+            # 只清空共享梯度，保留普通任务头梯度
+            for p in parameters:
                 p.grad = None
+        g, GTG = self.evograd(
+            grads,
+            model,
+            optimizer,
+            parameters,
+            grad_dims,
+            metric_batch,
+            metric_fn,
+        )
 
-        g, GTG = self.evograd(grads,model,optimizer,shared_parameters,grad_dims,metric_batch,metric_fn,)
-
-        self.overwrite_grad(shared_parameters,g,grad_dims,)
+        self.overwrite_grad(parameters, g, grad_dims)
 
         return GTG
 
@@ -1283,21 +1293,33 @@ class EvoGrad(WeightMethod):
         grad_dims, metric_batch, metric_fn,
     ):
         self.k += 1
-        norms = torch.linalg.vector_norm(grads, dim=0).clamp_min(1e-12)
+        # norms = torch.linalg.vector_norm(grads, dim=0).clamp_min(1e-12)
 
 
+        # if grads.shape[0] > self.sample_size:
+        #     indices = torch.randperm(
+        #         grads.shape[0], device=grads.device,
+        #     )[:self.sample_size]
+        #     G = grads.index_select(0, indices)
+        # else:
+        #     G = grads
         if grads.shape[0] > self.sample_size:
-            indices = torch.randperm(
-                grads.shape[0], device=grads.device,
-            )[:self.sample_size]
+            indices = torch.randint(0,grads.shape[0],(self.sample_size,),device=grads.device,)
             G = grads.index_select(0, indices)
         else:
             G = grads
 
+        sampled_norms = torch.linalg.vector_norm(G, dim=0).clamp_min(1e-12)
+        full_norms = torch.linalg.vector_norm(grads, dim=0).clamp_min(1e-12)
         self.pop, g, self.nondominated_set_k, info = evo(
-            G / norms, G, self.k,
-            self.pop, self.toolbox, self.hof, self.nondominated_set_k,
-            full_inputs=grads / norms,
+            G / sampled_norms,
+            G,
+            self.k,
+            self.pop,
+            self.toolbox,
+            self.hof,
+            self.nondominated_set_k,
+            full_inputs=grads / full_norms,
             full_G=grads,
             model=model,
             optimizer=optimizer,
@@ -1307,6 +1329,7 @@ class EvoGrad(WeightMethod):
             max_norm=self.max_norm,
             metric_fn=metric_fn,
         )
+
         self.last_info = dict(
             info, batch_index=self.k, sampled_coordinates=G.shape[0],
         )
@@ -1318,7 +1341,9 @@ class EvoGrad(WeightMethod):
         shared_parameters=None,
         **kwargs,
     ):
-        shared_parameters = list(shared_parameters)
+        shared_parameters = [
+            p for p in shared_parameters if p.requires_grad
+        ]
 
         GTG = self.get_weighted_loss(
             losses,

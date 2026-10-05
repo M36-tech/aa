@@ -314,6 +314,13 @@ def metric_guided_selection(candidates,toolbox,full_inputs,model,optimizer,share
     virtual_optimizer.load_state_dict(copy.deepcopy(optimizer_state_cpu))
 
     virtual_shared_parameters = [parameter_map[id(parameter)] for parameter in shared_parameters]
+    shared_ids = {id(p) for p in shared_parameters}
+
+    virtual_head_gradients = [
+        (parameter_map[id(p)], saved_grad)
+        for p, saved_grad in zip(parameters, saved_grads)
+        if p.requires_grad and id(p) not in shared_ids
+    ]
 
     best_direction = None
     best_program = None
@@ -341,6 +348,14 @@ def metric_guided_selection(candidates,toolbox,full_inputs,model,optimizer,share
 
                 if not torch.isfinite(d_norm):
                     continue
+            for virtual_parameter, saved_grad in virtual_head_gradients:
+                virtual_parameter.grad = (
+                    None
+                    if saved_grad is None
+                    else saved_grad.to(
+                        virtual_parameter.device
+                    ).clone()
+                )
             _set_shared_grad(virtual_shared_parameters,d,)
 
             if max_norm > 0:
