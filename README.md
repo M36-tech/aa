@@ -58,9 +58,9 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
 
     for gen in range(1, ngen):
 
-        fitnesses = toolbox.map(toolbox.evaluate, offspring)
-        for ind, fitness in zip(offspring, fitnesses):
-            ind.fitness.values = fitness
+        # fitnesses = toolbox.map(toolbox.evaluate, offspring)
+        # for ind, fitness in zip(offspring, fitnesses):
+        #     ind.fitness.values = fitness
 
 
         combinedPop = population + offspring
