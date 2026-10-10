@@ -10,7 +10,7 @@ pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --e
 Install the repo and:
 ```bash
 cd repo_path
-pip install -e .
+pip install -r requirements.txt
 ```
 
 # Download dataset
@@ -50,7 +50,7 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
     fronts = tools.emo.sortNondominated(population, k=npop, first_front_only=False)
     for i, front in enumerate(fronts):     
         for ind in front:
-            ind.fitness.values = i + 1,   
+             ind.fitness.values = -(i + 1), 
 
     offspring_sl = toolbox.selectGen1(population, npop)
 
@@ -76,7 +76,7 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
     
         population = tools.selNSGA2(combinedPop, k=npop, nd='standard')
 
-        matingpool = toolbox.select(population, npop)
+        # matingpool = toolbox.select(population, npop)
         #print(rept_rate(population))
 
         if halloffame is not None:
@@ -88,7 +88,9 @@ def eaNSGA2(population, toolbox, cxpb, mutpb, ngen, npop, stats=None, halloffame
         if verbose:
             print(logbook.stream)
  
-        offspring = varAnd(matingpool, toolbox, cxpb, mutpb)
+        if gen < ngen - 1:
+            matingpool = toolbox.select(population, npop)
+            offspring = varAnd(matingpool, toolbox, cxpb, mutpb)
 
     return population,halloffame
 ```

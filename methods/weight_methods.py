@@ -1230,26 +1230,15 @@ class EvoGrad(WeightMethod):
         metric_fn=None,
         **kwargs,
     ):
-        # GP 只处理共享参数
-        parameters = [
-            p for p in shared_parameters if p.requires_grad
-        ]
+        parameters = [p for p in shared_parameters if p.requires_grad]
         grad_dims = [p.numel() for p in parameters]
-        grads = parameters[0].new_zeros(
-            (sum(grad_dims), self.n_tasks)
-        )
-
-        # batch 开始时清空所有梯度
+        grads = parameters[0].new_zeros((sum(grad_dims), self.n_tasks))
         for p in model.parameters():
             p.grad = None
 
         for task in range(self.n_tasks):
-            losses[task].backward(
-                retain_graph=task < self.n_tasks - 1
-            )
+            losses[task].backward(retain_graph=task < self.n_tasks - 1)
             self.grad2vec(parameters, grads, grad_dims, task)
-
-            # 只清空共享梯度，保留普通任务头梯度
             for p in parameters:
                 p.grad = None
         g, GTG = self.evograd(
